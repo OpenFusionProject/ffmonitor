@@ -1,7 +1,11 @@
 use std::{
-    io::BufRead as _,
+    io::{BufRead as _, BufReader},
     net::{SocketAddr, TcpStream},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+        Arc, Mutex,
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -10,6 +14,15 @@ use log::*;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
+
+pub type MonitorNotificationCallback = Box<dyn Fn(MonitorNotification) + Send + Sync>;
+
+#[derive(Debug, Clone)]
+pub enum MonitorNotification {
+    Connected,
+    Updated(MonitorUpdate),
+    Disconnected,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerEvent {
@@ -29,7 +42,6 @@ enum EventInternal {
     Player(PlayerEvent),
     Chat(ChatEvent),
     End,
-    Disconnect,
 }
 impl TryFrom<&str> for EventInternal {
     type Error = String;
@@ -72,36 +84,57 @@ pub enum Event {
     Player(PlayerEvent),
     Chat(ChatEvent),
 }
-impl From<EventInternal> for Event {
-    fn from(event: EventInternal) -> Self {
+impl TryFrom<EventInternal> for Event {
+    type Error = ();
+    fn try_from(event: EventInternal) -> std::result::Result<Self, ()> {
         match event {
-            EventInternal::Player(player) => Event::Player(player),
-            EventInternal::Chat(chat) => Event::Chat(chat),
-            _ => unreachable!(),
+            EventInternal::Player(player) => Ok(Event::Player(player)),
+            EventInternal::Chat(chat) => Ok(Event::Chat(chat)),
+            _ => Err(()),
         }
     }
 }
 
-fn listen(addr: SocketAddr, tx: mpsc::Sender<EventInternal>) -> Result<()> {
+fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Result<()> {
     info!("Connecting to monitor at {}", addr);
     let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
-    let mut reader = std::io::BufReader::new(stream);
+    callback(MonitorNotification::Connected);
+    let mut reader = BufReader::new(stream);
     let mut line = String::new();
+    let mut events = Vec::new();
     loop {
         if reader.read_line(&mut line)? == 0 {
-            return Err("Connection closed".into());
+            callback(MonitorNotification::Disconnected);
+            return Ok(());
         }
 
-        match EventInternal::try_from(line.trim()) {
-            Ok(event) => {
-                debug!("Received event: {:?}", event);
-                tx.send(event.clone()).map_err(|_| "Failed to send event")?;
-            }
+        let event_parsed = EventInternal::try_from(line.trim());
+        line.clear();
+        let event = match event_parsed {
+            Ok(event) => event,
             Err(err) => {
                 warn!("Failed to parse event ({})", err);
+                continue;
             }
+        };
+
+        if events.is_empty() && event != EventInternal::Begin {
+            warn!("Event received before begin event");
+            continue;
         }
-        line.clear();
+
+        events.push(event);
+        if events.last().unwrap() == &EventInternal::End {
+            let events_filtered = events
+                .iter()
+                .filter_map(|event| Event::try_from(event.clone()).ok())
+                .collect();
+            let update = MonitorUpdate {
+                events: events_filtered,
+            };
+            callback(MonitorNotification::Updated(update));
+            events.clear();
+        }
     }
 }
 
@@ -125,83 +158,79 @@ impl MonitorUpdate {
 
 pub struct Monitor {
     handle: JoinHandle<()>,
-    rx: Receiver<EventInternal>,
-    buf: Vec<EventInternal>,
-    connected: bool,
-    last_update: Option<MonitorUpdate>,
+    rx: Receiver<MonitorUpdate>,
+    connected: Arc<AtomicBool>,
+    last_update: Arc<Mutex<Option<MonitorUpdate>>>,
 }
 impl Monitor {
+    /// Create a new Monitor instance that connects to the given address.
+    /// Updates are buffered and can be pulled with `poll()`.
     pub fn new(address: &str) -> Result<Self> {
+        Self::new_internal(address, None)
+    }
+
+    /// Create a new Monitor instance that connects to the given address.
+    /// Updates are passed to the given callback and not buffered.
+    pub fn new_with_callback(address: &str, callback: MonitorNotificationCallback) -> Result<Self> {
+        Self::new_internal(address, Some(callback))
+    }
+
+    fn new_internal(
+        address: &str,
+        user_callback: Option<MonitorNotificationCallback>,
+    ) -> Result<Self> {
         info!("ffmonitor v{}", env!("CARGO_PKG_VERSION"));
         let address: SocketAddr = address.parse()?;
         let (tx, rx) = mpsc::channel();
+        let connected = Arc::new(AtomicBool::new(false));
+        let last_update = Arc::new(Mutex::new(None));
+
+        let conn = connected.clone();
+        let lu = last_update.clone();
+        let callback: Arc<MonitorNotificationCallback> = Arc::new(Box::new(move |notification| {
+            match notification.clone() {
+                MonitorNotification::Connected => conn.store(true, Ordering::Release),
+                MonitorNotification::Updated(update) => {
+                    *lu.lock().unwrap() = Some(update.clone());
+                    if user_callback.is_none() {
+                        // don't buffer if user is handling updates
+                        let _ = tx.send(update);
+                    }
+                }
+                MonitorNotification::Disconnected => conn.store(false, Ordering::Release),
+            }
+            if let Some(cb) = &user_callback {
+                cb(notification);
+            }
+        }));
+
         let handle = thread::spawn({
             move || loop {
-                if let Err(err) = listen(address, tx.clone()) {
-                    error!("Monitor connection broken: {}", err);
-                    tx.clone().send(EventInternal::Disconnect).unwrap();
+                if let Err(err) = listen(address, callback.clone()) {
+                    error!("Couldn't connect to monitor: {}", err);
                     thread::sleep(Duration::from_secs(1));
                 }
             }
         });
+
         Ok(Self {
             handle,
             rx,
-            buf: Vec::new(),
-            connected: false,
-            last_update: None,
+            connected,
+            last_update,
         })
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connected
+        self.connected.load(Ordering::Acquire)
     }
 
     pub fn poll(&mut self) -> Option<MonitorUpdate> {
-        // move all the events from the queue into the buffer
-        while let Ok(event) = self.rx.try_recv() {
-            if event == EventInternal::Disconnect {
-                self.connected = false;
-                return None;
-            } else {
-                self.connected = true;
-                self.buf.push(event);
-            }
-        }
-
-        // find the begin event
-        let begin_pos = self
-            .buf
-            .iter()
-            .position(|event| *event == EventInternal::Begin)?;
-
-        // find the end event
-        let end_pos = self
-            .buf
-            .iter()
-            .position(|event| *event == EventInternal::End)?;
-
-        if end_pos < begin_pos {
-            warn!("End event found before begin event");
-            self.buf.drain(..=end_pos);
-            return None;
-        }
-
-        // extract the events between begin and end, remove the begin and end events
-        let mut events: Vec<EventInternal> = self.buf.drain(begin_pos..=end_pos).collect();
-        events.pop();
-        events.remove(0);
-
-        // convert the internal events to public events
-        let events: Vec<Event> = events.into_iter().map(Event::from).collect();
-        let update = MonitorUpdate { events };
-        self.last_update = Some(update.clone());
-
-        Some(update)
+        self.rx.try_recv().ok()
     }
 
     pub fn get_last_update(&self) -> Option<MonitorUpdate> {
-        self.last_update.clone()
+        self.last_update.lock().unwrap().clone()
     }
 
     pub fn shutdown(self) -> Result<()> {
