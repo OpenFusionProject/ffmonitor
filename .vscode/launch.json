@@ -26,15 +26,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug example 'monitor'",
+            "name": "Debug example 'polling'",
             "cargo": {
                 "args": [
                     "build",
-                    "--example=monitor",
+                    "--example=polling",
                     "--package=ffmonitor"
                 ],
                 "filter": {
-                    "name": "monitor",
+                    "name": "polling",
                     "kind": "example"
                 }
             },

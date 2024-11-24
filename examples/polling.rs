@@ -14,8 +14,6 @@ fn main() {
     let mut monitor = Monitor::new(address).expect("Bad address");
     let mut last_connected_state = monitor.is_connected();
     loop {
-        let poll_result = monitor.poll();
-
         let connected = monitor.is_connected();
         if connected != last_connected_state {
             last_connected_state = connected;
@@ -26,7 +24,7 @@ fn main() {
             }
         }
 
-        if let Some(update) = poll_result {
+        while let Some(update) = monitor.poll() {
             println!("Player count: {}", update.get_player_count());
             let events = update.get_events();
             if events.is_empty() {
@@ -36,9 +34,9 @@ fn main() {
                     println!("\t{:?}", event);
                 }
             }
-        } else {
-            // monitor update not ready yet
-            thread::sleep(Duration::from_millis(500));
         }
+
+        // wait for next updates
+        thread::sleep(Duration::from_millis(500));
     }
 }
