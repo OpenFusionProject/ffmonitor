@@ -105,6 +105,7 @@ fn listen(addr: SocketAddr, tx: mpsc::Sender<EventInternal>) -> Result<()> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct MonitorUpdate {
     events: Vec<Event>,
 }
@@ -127,6 +128,7 @@ pub struct Monitor {
     rx: Receiver<EventInternal>,
     buf: Vec<EventInternal>,
     connected: bool,
+    last_update: Option<MonitorUpdate>,
 }
 impl Monitor {
     pub fn new(address: &str) -> Result<Self> {
@@ -147,6 +149,7 @@ impl Monitor {
             rx,
             buf: Vec::new(),
             connected: false,
+            last_update: None,
         })
     }
 
@@ -191,8 +194,14 @@ impl Monitor {
 
         // convert the internal events to public events
         let events: Vec<Event> = events.into_iter().map(Event::from).collect();
+        let update = MonitorUpdate { events };
+        self.last_update = Some(update.clone());
 
-        Some(MonitorUpdate { events })
+        Some(update)
+    }
+
+    pub fn get_last_update(&self) -> Option<MonitorUpdate> {
+        self.last_update.clone()
     }
 
     pub fn shutdown(self) -> Result<()> {
