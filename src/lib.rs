@@ -1,6 +1,7 @@
 use std::{
     io::{BufRead as _, BufReader},
     net::{SocketAddr, TcpStream},
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
@@ -50,18 +51,57 @@ impl PlayerEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatKind {
+    FreeChat,
+    MenuChat,
+    BuddyChat,
+    BuddyMenuChat,
+    GroupChat,
+    GroupMenuChat,
+    TradeChat,
+}
+impl FromStr for ChatKind {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "freechat" => Ok(Self::FreeChat),
+            "menuchat" => Ok(Self::MenuChat),
+            "buddychat" => Ok(Self::BuddyChat),
+            "buddymenuchat" => Ok(Self::BuddyMenuChat),
+            "groupchat" => Ok(Self::GroupChat),
+            "groupmenuchat" => Ok(Self::GroupMenuChat),
+            "tradechat" => Ok(Self::TradeChat),
+            other => Err(format!("Unknown chat kind '{}'", other).into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatEvent {
+    pub kind: ChatKind,
+    pub from: String,
+    pub to: Option<String>,
     pub message: String,
 }
 impl ChatEvent {
     fn parse(line: &str) -> Result<Self> {
-        // chat <message...>
-        const PATTERN: &str = r"^chat (.+)$";
+        // chat [<kind>] <from>: <message...>
+        // chat [<kind>] <from> (to <to>): <message...>
+        const PATTERN: &str = r"^chat \[(.+?)\] (.+?)(?: \(to (.+)\))?: (.*)$";
         static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
 
         let captures = REGEX.captures(line).ok_or("Malformed")?;
-        let message = captures[1].to_string();
-        Ok(Self { message })
+        let kind = captures[1].parse()?;
+        let from = captures[2].to_string();
+        let to = captures.get(3).map(|m| m.as_str().to_string());
+        let message = captures[4].to_string();
+        Ok(Self {
+            kind,
+            from,
+            to,
+            message,
+        })
     }
 }
 
