@@ -8,6 +8,7 @@ name = "ffmonitor"
 
 [dependencies]
 log = "0.4.22"
+regex = "1.11.1"
 
 [[example]]
 name = "polling"

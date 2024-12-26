@@ -4,35 +4,17 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
 use log::*;
+use regex::Regex;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
-
-trait FromLineStream: Sized {
-    fn from_line_stream(lines: &mut Vec<String>) -> Result<Self>;
-}
-
-fn consume_next_token(line: &mut String) -> Option<String> {
-    if line.is_empty() {
-        return None;
-    }
-
-    match line.find(' ') {
-        Some(idx) => {
-            let token = line.drain(..idx).collect();
-            line.drain(..1);
-            Some(token)
-        }
-        None => Some(std::mem::take(line)),
-    }
-}
 
 pub type MonitorNotificationCallback = Box<dyn Fn(MonitorNotification) + Send + Sync>;
 
@@ -49,20 +31,16 @@ pub struct PlayerEvent {
     pub y_coord: i32,
     pub name: String,
 }
-impl FromLineStream for PlayerEvent {
-    fn from_line_stream(lines: &mut Vec<String>) -> Result<Self> {
+impl PlayerEvent {
+    fn parse(line: &str) -> Result<Self> {
         // player <x> <y> <name...>
-        let mut line = lines.remove(0);
-        assert!(consume_next_token(&mut line).is_some_and(|s| s == "player"));
-        let x_coord = consume_next_token(&mut line)
-            .ok_or("Missing x coordinate")?
-            .parse()
-            .map_err(|_| "Bad x coordinate")?;
-        let y_coord = consume_next_token(&mut line)
-            .ok_or("Missing y coordinate")?
-            .parse()
-            .map_err(|_| "Bad y coordinate")?;
-        let name = line;
+        const PATTERN: &str = r"^player (\d+) (\d+) (.+)$";
+        static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
+
+        let captures = REGEX.captures(line).ok_or("Malformed")?;
+        let x_coord = captures[1].parse().map_err(|_| "Invalid x coordinate")?;
+        let y_coord = captures[2].parse().map_err(|_| "Invalid y coordinate")?;
+        let name = captures[3].to_string();
         Ok(Self {
             x_coord,
             y_coord,
@@ -75,12 +53,14 @@ impl FromLineStream for PlayerEvent {
 pub struct ChatEvent {
     pub message: String,
 }
-impl FromLineStream for ChatEvent {
-    fn from_line_stream(lines: &mut Vec<String>) -> Result<Self> {
+impl ChatEvent {
+    fn parse(line: &str) -> Result<Self> {
         // chat <message...>
-        let mut line = lines.remove(0);
-        assert!(consume_next_token(&mut line).is_some_and(|s| s == "chat"));
-        let message = line;
+        const PATTERN: &str = r"^chat (.+)$";
+        static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
+
+        let captures = REGEX.captures(line).ok_or("Malformed")?;
+        let message = captures[1].to_string();
         Ok(Self { message })
     }
 }
@@ -89,6 +69,10 @@ impl FromLineStream for ChatEvent {
 pub enum Event {
     Player(PlayerEvent),
     Chat(ChatEvent),
+}
+
+fn get_first_token(line: &str) -> Option<&str> {
+    line.split_whitespace().next()
 }
 
 fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Result<()> {
@@ -117,23 +101,24 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
 
         let mut events = Vec::new();
         while !lines.is_empty() {
-            let event = match lines[0].split_whitespace().next() {
-                Some("player") => match PlayerEvent::from_line_stream(&mut lines) {
+            let first_line = lines.remove(0);
+            let event = match get_first_token(&first_line) {
+                Some("player") => match PlayerEvent::parse(&first_line) {
                     Ok(event) => Event::Player(event),
                     Err(err) => {
-                        warn!("Bad player event: {}", err);
+                        warn!("Bad player event ({}): {}", err, first_line);
                         continue;
                     }
                 },
-                Some("chat") => match ChatEvent::from_line_stream(&mut lines) {
+                Some("chat") => match ChatEvent::parse(&first_line) {
                     Ok(event) => Event::Chat(event),
                     Err(err) => {
-                        warn!("Bad chat event: {}", err);
+                        warn!("Bad chat event ({}): {}", err, first_line);
                         continue;
                     }
                 },
-                Some(unknown) => {
-                    warn!("Unknown event type: {}", unknown);
+                Some(_) => {
+                    warn!("Unknown event: {}", first_line);
                     continue;
                 }
                 None => {
