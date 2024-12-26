@@ -15,6 +15,25 @@ use log::*;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
+trait FromLineStream: Sized {
+    fn from_line_stream(lines: &mut Vec<String>) -> Result<Self>;
+}
+
+fn consume_next_token(line: &mut String) -> Option<String> {
+    if line.is_empty() {
+        return None;
+    }
+
+    match line.find(' ') {
+        Some(idx) => {
+            let token = line.drain(..idx).collect();
+            line.drain(..1);
+            Some(token)
+        }
+        None => Some(std::mem::take(line)),
+    }
+}
+
 pub type MonitorNotificationCallback = Box<dyn Fn(MonitorNotification) + Send + Sync>;
 
 #[derive(Debug, Clone)]
@@ -30,52 +49,39 @@ pub struct PlayerEvent {
     pub y_coord: i32,
     pub name: String,
 }
+impl FromLineStream for PlayerEvent {
+    fn from_line_stream(lines: &mut Vec<String>) -> Result<Self> {
+        // player <x> <y> <name...>
+        let mut line = lines.remove(0);
+        assert!(consume_next_token(&mut line).is_some_and(|s| s == "player"));
+        let x_coord = consume_next_token(&mut line)
+            .ok_or("Missing x coordinate")?
+            .parse()
+            .map_err(|_| "Bad x coordinate")?;
+        let y_coord = consume_next_token(&mut line)
+            .ok_or("Missing y coordinate")?
+            .parse()
+            .map_err(|_| "Bad y coordinate")?;
+        let name = line;
+        Ok(Self {
+            x_coord,
+            y_coord,
+            name,
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatEvent {
-    message: String,
+    pub message: String,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EventInternal {
-    Begin,
-    Player(PlayerEvent),
-    Chat(ChatEvent),
-    End,
-}
-impl TryFrom<&str> for EventInternal {
-    type Error = String;
-    fn try_from(value: &str) -> std::result::Result<Self, String> {
-        let parts: Vec<&str> = value.split_ascii_whitespace().collect();
-        if parts.is_empty() {
-            return Err("Empty event".into());
-        }
-
-        match parts[0] {
-            "begin" => Ok(EventInternal::Begin),
-            "end" => Ok(EventInternal::End),
-            "player" => {
-                if parts.len() < 4 {
-                    return Err("player: Not enough tokens".into());
-                }
-                let x_coord = parts[1].parse().map_err(|_| "player: Invalid x coord")?;
-                let y_coord = parts[2].parse().map_err(|_| "player: Invalid y coord")?;
-                let name = parts[3..].join(" ");
-                Ok(EventInternal::Player(PlayerEvent {
-                    x_coord,
-                    y_coord,
-                    name,
-                }))
-            }
-            "chat" => {
-                if parts.len() < 2 {
-                    return Err("chat: Not enough tokens".into());
-                }
-                let message = parts[1..].join(" ");
-                Ok(EventInternal::Chat(ChatEvent { message }))
-            }
-            other => Err(format!("Unknown event type: {}", other)),
-        }
+impl FromLineStream for ChatEvent {
+    fn from_line_stream(lines: &mut Vec<String>) -> Result<Self> {
+        // chat <message...>
+        let mut line = lines.remove(0);
+        assert!(consume_next_token(&mut line).is_some_and(|s| s == "chat"));
+        let message = line;
+        Ok(Self { message })
     }
 }
 
@@ -84,56 +90,62 @@ pub enum Event {
     Player(PlayerEvent),
     Chat(ChatEvent),
 }
-impl TryFrom<EventInternal> for Event {
-    type Error = ();
-    fn try_from(event: EventInternal) -> std::result::Result<Self, ()> {
-        match event {
-            EventInternal::Player(player) => Ok(Event::Player(player)),
-            EventInternal::Chat(chat) => Ok(Event::Chat(chat)),
-            _ => Err(()),
-        }
-    }
-}
 
 fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Result<()> {
     info!("Connecting to monitor at {}", addr);
     let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
     callback(MonitorNotification::Connected);
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let mut events = Vec::new();
+    let mut lines = Vec::new();
     loop {
+        let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
             callback(MonitorNotification::Disconnected);
             return Ok(());
         }
+        line.pop(); // remove newline
 
-        let event_parsed = EventInternal::try_from(line.trim());
-        line.clear();
-        let event = match event_parsed {
-            Ok(event) => event,
-            Err(err) => {
-                warn!("Failed to parse event ({})", err);
-                continue;
-            }
-        };
-
-        if events.is_empty() && event != EventInternal::Begin {
-            warn!("Event received before begin event");
+        if line == "begin" {
+            lines.clear();
             continue;
         }
 
-        events.push(event);
-        if events.last().unwrap() == &EventInternal::End {
-            let events_filtered = events
-                .iter()
-                .filter_map(|event| Event::try_from(event.clone()).ok())
-                .collect();
-            let update = MonitorUpdate {
-                events: events_filtered,
+        if line != "end" {
+            lines.push(line);
+            continue;
+        }
+
+        let mut events = Vec::new();
+        while !lines.is_empty() {
+            let event = match lines[0].split_whitespace().next() {
+                Some("player") => match PlayerEvent::from_line_stream(&mut lines) {
+                    Ok(event) => Event::Player(event),
+                    Err(err) => {
+                        warn!("Bad player event: {}", err);
+                        continue;
+                    }
+                },
+                Some("chat") => match ChatEvent::from_line_stream(&mut lines) {
+                    Ok(event) => Event::Chat(event),
+                    Err(err) => {
+                        warn!("Bad chat event: {}", err);
+                        continue;
+                    }
+                },
+                Some(unknown) => {
+                    warn!("Unknown event type: {}", unknown);
+                    continue;
+                }
+                None => {
+                    warn!("Empty line in monitor update");
+                    continue;
+                }
             };
-            callback(MonitorNotification::Updated(update));
-            events.clear();
+            events.push(event);
+        }
+
+        if !events.is_empty() {
+            callback(MonitorNotification::Updated(MonitorUpdate { events }));
         }
     }
 }
