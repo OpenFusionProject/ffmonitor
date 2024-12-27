@@ -106,6 +106,7 @@ impl ChatEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     Player(PlayerEvent),
     Chat(ChatEvent),
