@@ -106,10 +106,41 @@ impl ChatEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailEvent {
+    pub from: String,
+    pub to: String,
+    pub subject: Option<String>,
+    pub body: Vec<String>,
+}
+impl EmailEvent {
+    fn parse(header: &str, body: Vec<String>) -> Result<Self> {
+        // email [Email] <from> (to <to>): <<subject>>
+        const NO_SUBJECT_IDENTIFIER: &str = "No subject.";
+        const PATTERN: &str = r"^email \[Email\] (.+?) \(to (.+?)\): <(.+)>$";
+        static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
+
+        let captures = REGEX.captures(header).ok_or("Malformed")?;
+        let from = captures[1].to_string();
+        let to = captures[2].to_string();
+        let subject = match captures[3].to_string().as_str() {
+            NO_SUBJECT_IDENTIFIER => None,
+            other => Some(other.to_string()),
+        };
+        Ok(Self {
+            from,
+            to,
+            subject,
+            body,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
     Player(PlayerEvent),
     Chat(ChatEvent),
+    Email(EmailEvent),
 }
 
 fn get_first_token(line: &str) -> Option<&str> {
@@ -158,6 +189,25 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
                         continue;
                     }
                 },
+                Some("email") => {
+                    // next lines with tabs at the beginning are part of the email body
+                    let mut body = Vec::new();
+                    while !lines.is_empty() && lines[0].starts_with('\t') {
+                        body.push(lines.remove(0).trim_start().to_string());
+                    }
+                    if lines.is_empty() || !lines[0].starts_with("endemail") {
+                        warn!("Malformed email event (no endemail)");
+                        continue;
+                    }
+                    lines.remove(0); // remove endemail
+                    match EmailEvent::parse(&first_line, body) {
+                        Ok(event) => Event::Email(event),
+                        Err(err) => {
+                            warn!("Bad email event header ({}): {}", err, first_line);
+                            continue;
+                        }
+                    }
+                }
                 Some(_) => {
                     warn!("Unknown event: {}", first_line);
                     continue;
