@@ -8,6 +8,11 @@ Extremely lightweight Rust crate for reading events off an OpenFusion monitor po
 - The `Monitor` buffers monitor updates in memory that can be retrieved using `Monitor::poll()`. (default behavior)
 - The `Monitor` does not buffer updates and instead sends them to a user-provided callback.
 
+Supported events:
+- Player position events (`player`)
+- Player chat events (`chat`)
+- Email events (`email`)
+
 ## Usage
 
 Polling mode:
