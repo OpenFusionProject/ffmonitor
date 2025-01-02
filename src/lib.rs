@@ -220,9 +220,7 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
             events.push(event);
         }
 
-        if !events.is_empty() {
-            callback(MonitorNotification::Updated(MonitorUpdate { events }));
-        }
+        callback(MonitorNotification::Updated(MonitorUpdate { events }));
     }
 }
 
