@@ -187,12 +187,34 @@ impl EmailEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameRequestEvent {
+    pub player_uid: u64,
+    pub requested_name: String,
+}
+impl NameRequestEvent {
+    fn parse(line: &str) -> Result<Self> {
+        // namereq <player_uid> <requested_name>
+        const PATTERN: &str = r"^namereq (\d+) (.+)$";
+        static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
+
+        let captures = REGEX.captures(line).ok_or("Malformed")?;
+        let player_uid = captures[1].parse()?;
+        let requested_name = captures[2].to_string();
+        Ok(Self {
+            player_uid,
+            requested_name,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
     Player(PlayerEvent),
     Chat(ChatEvent),
     Broadcast(BroadcastEvent),
     Email(EmailEvent),
+    NameRequest(NameRequestEvent),
 }
 
 fn get_first_token(line: &str) -> Option<&str> {
@@ -267,6 +289,13 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
                         }
                     }
                 }
+                Some("namereq") => match NameRequestEvent::parse(&first_line) {
+                    Ok(event) => Event::NameRequest(event),
+                    Err(err) => {
+                        warn!("Bad name request event ({}): {}", err, first_line);
+                        continue;
+                    }
+                },
                 Some(_) => {
                     warn!("Unknown event: {}", first_line);
                     continue;
