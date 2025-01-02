@@ -12,6 +12,8 @@ Supported events:
 - Player position events (`player`)
 - Player chat events (`chat`)
 - Email events (`email`)
+- Announcement events (`bcast`)
+- Name request events (`namereq`)
 
 ## Usage
 
