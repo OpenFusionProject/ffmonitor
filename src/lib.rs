@@ -155,7 +155,7 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
     let mut lines = Vec::new();
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        if !reader.read_line(&mut line).is_ok_and(|n| n > 0) {
             callback(MonitorNotification::Disconnected);
             return Ok(());
         }
