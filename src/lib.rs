@@ -106,6 +106,57 @@ impl ChatEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BroadcastScope {
+    Local,
+    Channel,
+    Shard,
+    Global,
+}
+impl TryFrom<usize> for BroadcastScope {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Local),
+            1 => Ok(Self::Channel),
+            2 => Ok(Self::Shard),
+            3 => Ok(Self::Global),
+            other => Err(format!("Unknown broadcast scope {}", other).into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BroadcastEvent {
+    pub scope: BroadcastScope,
+    pub announcement_type: usize,
+    pub duration_secs: usize,
+    pub from: String,
+    pub message: String,
+}
+impl BroadcastEvent {
+    fn parse(line: &str) -> Result<Self> {
+        // bcast <scope> <announcement_type> <duration> <from>: <message...>
+        const PATTERN: &str = r"^bcast (\d+) (\d+) (\d+) (.+?): (.*)$";
+        static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
+
+        let captures = REGEX.captures(line).ok_or("Malformed")?;
+        let scope = captures[1].parse::<usize>()?.try_into()?;
+        let announcement_type = captures[2].parse()?;
+        let duration_secs = captures[3].parse()?;
+        let from = captures[4].to_string();
+        let message = captures[5].to_string();
+        Ok(Self {
+            scope,
+            announcement_type,
+            duration_secs,
+            from,
+            message,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailEvent {
     pub from: String,
     pub to: String,
@@ -140,6 +191,7 @@ impl EmailEvent {
 pub enum Event {
     Player(PlayerEvent),
     Chat(ChatEvent),
+    Broadcast(BroadcastEvent),
     Email(EmailEvent),
 }
 
@@ -186,6 +238,13 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
                     Ok(event) => Event::Chat(event),
                     Err(err) => {
                         warn!("Bad chat event ({}): {}", err, first_line);
+                        continue;
+                    }
+                },
+                Some("bcast") => match BroadcastEvent::parse(&first_line) {
+                    Ok(event) => Event::Broadcast(event),
+                    Err(err) => {
+                        warn!("Bad broadcast event ({}): {}", err, first_line);
                         continue;
                     }
                 },
