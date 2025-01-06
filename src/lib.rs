@@ -35,7 +35,7 @@ pub struct PlayerEvent {
 impl PlayerEvent {
     fn parse(line: &str) -> Result<Self> {
         // player <x> <y> <name...>
-        const PATTERN: &str = r"^player (\d+) (\d+) (.+)$";
+        const PATTERN: &str = r"^player (-?\d+) (-?\d+) (.+)$";
         static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
 
         let captures = REGEX.captures(line).ok_or("Malformed")?;
