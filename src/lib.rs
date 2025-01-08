@@ -1,4 +1,5 @@
 use std::{
+    fmt::{self, Display, Formatter},
     io::{BufRead as _, BufReader},
     net::{SocketAddr, TcpStream},
     str::FromStr,
@@ -51,6 +52,7 @@ impl PlayerEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChatKind {
     FreeChat,
     MenuChat,
@@ -59,20 +61,34 @@ pub enum ChatKind {
     GroupChat,
     GroupMenuChat,
     TradeChat,
+    Unknown(String),
+}
+impl From<&str> for ChatKind {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "freechat" => Self::FreeChat,
+            "menuchat" => Self::MenuChat,
+            "buddychat" => Self::BuddyChat,
+            "buddymenuchat" => Self::BuddyMenuChat,
+            "groupchat" => Self::GroupChat,
+            "groupmenuchat" => Self::GroupMenuChat,
+            "tradechat" => Self::TradeChat,
+            _ => Self::Unknown(s.to_string()),
+        }
+    }
 }
 impl FromStr for ChatKind {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "freechat" => Ok(Self::FreeChat),
-            "menuchat" => Ok(Self::MenuChat),
-            "buddychat" => Ok(Self::BuddyChat),
-            "buddymenuchat" => Ok(Self::BuddyMenuChat),
-            "groupchat" => Ok(Self::GroupChat),
-            "groupmenuchat" => Ok(Self::GroupMenuChat),
-            "tradechat" => Ok(Self::TradeChat),
-            other => Err(format!("Unknown chat kind '{}'", other).into()),
+        Ok(s.into())
+    }
+}
+impl Display for ChatKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Unknown(s) => write!(f, "{}*", s),
+            other => write!(f, "{:?}", other),
         }
     }
 }
