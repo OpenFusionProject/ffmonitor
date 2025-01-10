@@ -333,6 +333,38 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
             continue;
         }
 
+        let update = MonitorUpdate::from_lines(&mut lines);
+        callback(MonitorNotification::Updated(update));
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MonitorUpdate {
+    events: Vec<Event>,
+}
+impl MonitorUpdate {
+    /// Decompose the MonitorUpdate into a Vec of Events
+    pub fn get_events(self) -> Vec<Event> {
+        self.events
+    }
+
+    /// Get the number of players online in the MonitorUpdate.
+    /// This value is equal to the number of PlayerEvents in the update.
+    pub fn get_player_count(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|event| matches!(event, Event::Player(_)))
+            .count()
+    }
+
+    /// Add an Event to the MonitorUpdate.
+    pub fn add_event(&mut self, event: Event) {
+        self.events.push(event);
+    }
+
+    /// Parse a MonitorUpdate from a vector of lines.
+    /// The lines are consumed and removed from the input vector.
+    pub fn from_lines(lines: &mut Vec<String>) -> Self {
         let mut events = Vec::new();
         while !lines.is_empty() {
             let first_line = lines.remove(0);
@@ -395,30 +427,7 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
             };
             events.push(event);
         }
-
-        callback(MonitorNotification::Updated(MonitorUpdate { events }));
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct MonitorUpdate {
-    events: Vec<Event>,
-}
-impl MonitorUpdate {
-    /// Decompose the MonitorUpdate into a Vec of Events
-    pub fn get_events(self) -> Vec<Event> {
-        self.events
-    }
-
-    pub fn get_player_count(&self) -> usize {
-        self.events
-            .iter()
-            .filter(|event| matches!(event, Event::Player(_)))
-            .count()
-    }
-
-    pub fn add_event(&mut self, event: Event) {
-        self.events.push(event);
+        Self { events }
     }
 }
 impl Display for MonitorUpdate {
@@ -496,18 +505,22 @@ impl Monitor {
         })
     }
 
+    /// Check if the Monitor is connected to the feed.
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Acquire)
     }
 
+    /// Return a MonitorUpdate if one is available. Does not block.
     pub fn poll(&mut self) -> Option<MonitorUpdate> {
         self.rx.try_recv().ok()
     }
 
+    /// Get a copy of the last MonitorUpdate received.
     pub fn get_last_update(&self) -> Option<MonitorUpdate> {
         self.last_update.lock().unwrap().clone()
     }
 
+    /// Shut down the Monitor and wait for the thread to finish.
     pub fn shutdown(self) -> Result<()> {
         self.handle.join().map_err(|_| "Monitor thread panicked")?;
         Ok(())
