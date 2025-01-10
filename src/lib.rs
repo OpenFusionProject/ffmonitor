@@ -50,6 +50,11 @@ impl PlayerEvent {
         })
     }
 }
+impl Display for PlayerEvent {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "player {} {} {}", self.x_coord, self.y_coord, self.name)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -120,6 +125,21 @@ impl ChatEvent {
         })
     }
 }
+impl Display for ChatEvent {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(
+            f,
+            "chat [{}] {}{}: {}",
+            self.kind,
+            self.from,
+            self.to
+                .as_ref()
+                .map(|to| format!(" (to {})", to))
+                .unwrap_or_default(),
+            self.message
+        )
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BroadcastScope {
@@ -138,6 +158,16 @@ impl TryFrom<usize> for BroadcastScope {
             2 => Ok(Self::Shard),
             3 => Ok(Self::Global),
             other => Err(format!("Unknown broadcast scope {}", other).into()),
+        }
+    }
+}
+impl From<BroadcastScope> for usize {
+    fn from(scope: BroadcastScope) -> usize {
+        match scope {
+            BroadcastScope::Local => 0,
+            BroadcastScope::Channel => 1,
+            BroadcastScope::Shard => 2,
+            BroadcastScope::Global => 3,
         }
     }
 }
@@ -171,6 +201,18 @@ impl BroadcastEvent {
         })
     }
 }
+impl Display for BroadcastEvent {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let scope_ord: usize = self.scope.clone().into();
+        write!(
+            f,
+            "bcast {} {} {} {}: {}",
+            scope_ord, self.announcement_type, self.duration_secs, self.from, self.message
+        )
+    }
+}
+
+const NO_SUBJECT_IDENTIFIER: &str = "No subject.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailEvent {
@@ -182,7 +224,6 @@ pub struct EmailEvent {
 impl EmailEvent {
     fn parse(header: &str, body: Vec<String>) -> Result<Self> {
         // email [Email] <from> (to <to>): <<subject>>
-        const NO_SUBJECT_IDENTIFIER: &str = "No subject.";
         const PATTERN: &str = r"^email \[Email\] (.+?) \(to (.+?)\): <(.+)>$";
         static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(PATTERN).unwrap());
 
@@ -199,6 +240,21 @@ impl EmailEvent {
             subject,
             body,
         })
+    }
+}
+impl Display for EmailEvent {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(
+            f,
+            "email [Email] {} (to {}): <{}>",
+            self.from,
+            self.to,
+            self.subject.as_deref().unwrap_or(NO_SUBJECT_IDENTIFIER)
+        )?;
+        for line in &self.body {
+            write!(f, "\n\t{}", line)?;
+        }
+        write!(f, "\nendemail")
     }
 }
 
@@ -222,6 +278,11 @@ impl NameRequestEvent {
         })
     }
 }
+impl Display for NameRequestEvent {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "namereq {} {}", self.player_uid, self.requested_name)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -231,6 +292,17 @@ pub enum Event {
     Broadcast(BroadcastEvent),
     Email(EmailEvent),
     NameRequest(NameRequestEvent),
+}
+impl Display for Event {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Player(event) => write!(f, "{}", event),
+            Self::Chat(event) => write!(f, "{}", event),
+            Self::Broadcast(event) => write!(f, "{}", event),
+            Self::Email(event) => write!(f, "{}", event),
+            Self::NameRequest(event) => write!(f, "{}", event),
+        }
+    }
 }
 
 fn get_first_token(line: &str) -> Option<&str> {
@@ -328,7 +400,7 @@ fn listen(addr: SocketAddr, callback: Arc<MonitorNotificationCallback>) -> Resul
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MonitorUpdate {
     events: Vec<Event>,
 }
@@ -343,6 +415,19 @@ impl MonitorUpdate {
             .iter()
             .filter(|event| matches!(event, Event::Player(_)))
             .count()
+    }
+
+    pub fn add_event(&mut self, event: Event) {
+        self.events.push(event);
+    }
+}
+impl Display for MonitorUpdate {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        writeln!(f, "begin")?;
+        for event in &self.events {
+            writeln!(f, "{}", event)?;
+        }
+        writeln!(f, "end")
     }
 }
 
